@@ -1,19 +1,14 @@
 {
-  "version": 2,
   "builds": [
     {
-      "src": "app.py",
-      "use": "@vercel/python",
-      "config": {
-        "maxLambdaSize": "15mb",
-        "runtime": "python3.9"
-      }
+      "src": "app.py",  // আপনার Flask অ্যাপ্লিকেশনের ফাইলের নাম, যদি app.py না হয়ে অন্য কিছু হয়, তবে সেই নাম দিন।
+      "use": "@vercel/python"
     }
   ],
   "routes": [
     {
       "src": "/(.*)",
-      "dest": "app.py"
+      "dest": "app.py" // আপনার Flask অ্যাপ্লিকেশনের ফাইলের নাম
     }
   ]
 }
