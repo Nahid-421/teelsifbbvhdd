@@ -11,7 +11,7 @@ from datetime import datetime
 
 # ======================================================================
 # --- আপনার ব্যক্তিগত ও অ্যাডমিন তথ্য (এনভায়রনমেন্ট থেকে লোড হবে) ---
-# এই ভেরিয়েবলগুলো আপনার হোস্টিং এনভায়রনমেন্টে সেট করতে হবে।
+# এই ভেরিয়েবলগুলো আপনার হোস্টিং এনভায়রনমেন্টে (Vercel/Render) সেট করতে হবে।
 # ======================================================================
 MONGO_URI = os.environ.get("MONGO_URI")
 BOT_TOKEN = os.environ.get("BOT_TOKEN")
@@ -30,9 +30,7 @@ required_vars = {
 
 missing_vars = [name for name, value in required_vars.items() if not value]
 if missing_vars:
-    # This will cause the build to fail if a variable is missing, which is good.
     print(f"FATAL: Missing required environment variables: {', '.join(missing_vars)}")
-    print("Please set these variables in your deployment environment and restart the application.")
     sys.exit(1)
 
 # ======================================================================
@@ -60,7 +58,7 @@ def requires_auth(f):
 # --- ডাটাবেস কানেকশন ---
 try:
     client = MongoClient(MONGO_URI)
-    db = client.get_database() # Automatically get the database from the URI
+    db = client.get_database()
     movies = db["movies"]
     settings = db["settings"]
     feedback = db["feedback"]
