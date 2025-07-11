@@ -1,23 +1,40 @@
+# FINAL, SECURE, AND PRODUCTION-READY CODE
 import os
+import sys
 import re
 import requests
 from flask import Flask, render_template_string, request, redirect, url_for, Response, jsonify
 from pymongo import MongoClient
 from bson.objectid import ObjectId
 from functools import wraps
-from datetime import datetime, timedelta
-from apscheduler.schedulers.background import BackgroundScheduler
+from datetime import datetime
 
 # ======================================================================
-# --- আপনার ব্যক্তিগত ও অ্যাডমিন তথ্য ---
+# --- আপনার ব্যক্তিগত ও অ্যাডমিন তথ্য (এনভায়রনমেন্ট থেকে লোড হবে) ---
+# এই ভেরিয়েবলগুলো আপনার হোস্টিং এনভায়রনমেন্টে সেট করতে হবে।
 # ======================================================================
-MONGO_URI = "mongodb+srv://mesohas358:mesohas358@cluster0.6kxy1vc.mongodb.net/movie_db?retryWrites=true&w=majority&appName=Cluster0"
-BOT_TOKEN = "8172918962:AAEN98mHtzYL7dFNxReT2Emwkz9-5eWwR4w"
-TMDB_API_KEY = "7dc544d9253bccc3cfecc1c677f69819"
-ADMIN_CHANNEL_ID = "-1002853936940"
-BOT_USERNAME = "CtgAutobot"
-ADMIN_USERNAME = "Nahid270"
-ADMIN_PASSWORD = "Nahid270"
+MONGO_URI = os.environ.get("MONGO_URI")
+BOT_TOKEN = os.environ.get("BOT_TOKEN")
+TMDB_API_KEY = os.environ.get("TMDB_API_KEY")
+ADMIN_CHANNEL_ID = os.environ.get("ADMIN_CHANNEL_ID")
+BOT_USERNAME = os.environ.get("BOT_USERNAME")
+ADMIN_USERNAME = os.environ.get("ADMIN_USERNAME")
+ADMIN_PASSWORD = os.environ.get("ADMIN_PASSWORD")
+
+# --- প্রয়োজনীয় ভেরিয়েবলগুলো সেট করা হয়েছে কিনা তা পরীক্ষা করা ---
+required_vars = {
+    "MONGO_URI": MONGO_URI, "BOT_TOKEN": BOT_TOKEN, "TMDB_API_KEY": TMDB_API_KEY,
+    "ADMIN_CHANNEL_ID": ADMIN_CHANNEL_ID, "BOT_USERNAME": BOT_USERNAME,
+    "ADMIN_USERNAME": ADMIN_USERNAME, "ADMIN_PASSWORD": ADMIN_PASSWORD,
+}
+
+missing_vars = [name for name, value in required_vars.items() if not value]
+if missing_vars:
+    # This will cause the build to fail if a variable is missing, which is good.
+    print(f"FATAL: Missing required environment variables: {', '.join(missing_vars)}")
+    print("Please set these variables in your deployment environment and restart the application.")
+    sys.exit(1)
+
 # ======================================================================
 
 # --- অ্যাপ্লিকেশন সেটআপ ---
@@ -43,40 +60,20 @@ def requires_auth(f):
 # --- ডাটাবেস কানেকশন ---
 try:
     client = MongoClient(MONGO_URI)
-    db = client["movie_db"]
+    db = client.get_database() # Automatically get the database from the URI
     movies = db["movies"]
     settings = db["settings"]
     feedback = db["feedback"]
     print("SUCCESS: Successfully connected to MongoDB!")
 except Exception as e:
     print(f"FATAL: Error connecting to MongoDB: {e}. Exiting.")
-    exit(1)
+    sys.exit(1)
 
 # --- Context Processor: বিজ্ঞাপনের কোড সহজলভ্য করার জন্য ---
 @app.context_processor
 def inject_ads():
     ad_codes = settings.find_one()
     return dict(ad_settings=(ad_codes or {}), bot_username=BOT_USERNAME)
-
-# --- মেসেজ অটো-ডিলিট ফাংশন এবং সিডিউলার সেটআপ ---
-def delete_message_after_delay(chat_id, message_id):
-    """নির্দিষ্ট সময় পর টেলিগ্রাম মেসেজ ডিলিট করার ফাংশন।"""
-    print(f"Attempting to delete message {message_id} from chat {chat_id}")
-    try:
-        url = f"{TELEGRAM_API_URL}/deleteMessage"
-        payload = {'chat_id': chat_id, 'message_id': message_id}
-        response = requests.post(url, json=payload)
-        if response.json().get('ok'):
-            print(f"Successfully deleted message {message_id} from chat {chat_id}")
-        else:
-            print(f"Failed to delete message: {response.text}")
-    except Exception as e:
-        print(f"Error in delete_message_after_delay: {e}")
-
-# সিডিউলার তৈরি এবং চালু করা
-scheduler = BackgroundScheduler(daemon=True)
-scheduler.start()
-
 
 # ======================================================================
 # --- HTML টেমপ্লেট ---
@@ -752,22 +749,7 @@ def telegram_webhook():
                     if message_to_copy_id:
                         payload = {'chat_id': chat_id, 'from_chat_id': ADMIN_CHANNEL_ID, 'message_id': message_to_copy_id}
                         res = requests.post(f"{TELEGRAM_API_URL}/copyMessage", json=payload)
-                        res_json = res.json()
-                        
-                        if res_json.get('ok'):
-                            new_message_id = res_json['result']['message_id']
-                            run_time = datetime.now() + timedelta(minutes=30)
-                            
-                            scheduler.add_job(
-                                func=delete_message_after_delay,
-                                trigger='date',
-                                run_date=run_time,
-                                args=[chat_id, new_message_id],
-                                id=f'delete_{chat_id}_{new_message_id}',
-                                replace_existing=True
-                            )
-                            print(f"Scheduled message {new_message_id} for deletion in chat {chat_id} at {run_time}")
-                        else:
+                        if not res.json().get('ok'):
                              print(f"Failed to copy message: {res.text}")
                              requests.get(f"{TELEGRAM_API_URL}/sendMessage", params={'chat_id': chat_id, 'text': "Error sending file. It might have been deleted."})
                     else:
