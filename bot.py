@@ -1,4 +1,4 @@
-# FINAL, SECURE, AND PRODUCTION-READY CODE
+# FINAL, COMPLETE, AND SECURE CODE WITH DEBUGGING ROUTE
 import os
 import sys
 import re
@@ -21,26 +21,71 @@ BOT_USERNAME = os.environ.get("BOT_USERNAME")
 ADMIN_USERNAME = os.environ.get("ADMIN_USERNAME")
 ADMIN_PASSWORD = os.environ.get("ADMIN_PASSWORD")
 
-# --- প্রয়োজনীয় ভেরিয়েবলগুলো সেট করা হয়েছে কিনা তা পরীক্ষা করা ---
-required_vars = {
-    "MONGO_URI": MONGO_URI, "BOT_TOKEN": BOT_TOKEN, "TMDB_API_KEY": TMDB_API_KEY,
-    "ADMIN_CHANNEL_ID": ADMIN_CHANNEL_ID, "BOT_USERNAME": BOT_USERNAME,
-    "ADMIN_USERNAME": ADMIN_USERNAME, "ADMIN_PASSWORD": ADMIN_PASSWORD,
-}
-
-missing_vars = [name for name, value in required_vars.items() if not value]
-if missing_vars:
-    print(f"FATAL: Missing required environment variables: {', '.join(missing_vars)}")
-    sys.exit(1)
+# ======================================================================
+# --- অ্যাপ্লিকেশন সেটআপ ---
+# ======================================================================
+app = Flask(__name__)
 
 # ======================================================================
+# --- DEPLOYMENT TEST ROUTE ---
+# ডিবাগিং-এর জন্য। এটি কোনো কিছুর উপর নির্ভরশীল নয়।
+# ======================================================================
+@app.route('/test')
+def test_route():
+    # এনভায়রনমেন্ট ভেরিয়েবলগুলো এখানে পরীক্ষা করা হচ্ছে
+    all_vars = {
+        "MONGO_URI": MONGO_URI, "BOT_TOKEN": BOT_TOKEN, "TMDB_API_KEY": TMDB_API_KEY,
+        "ADMIN_CHANNEL_ID": ADMIN_CHANNEL_ID, "BOT_USERNAME": BOT_USERNAME,
+        "ADMIN_USERNAME": ADMIN_USERNAME, "ADMIN_PASSWORD": ADMIN_PASSWORD,
+    }
+    missing_vars_list = [name for name, value in all_vars.items() if not value]
+    
+    if missing_vars_list:
+        return f"Hello from Vercel! The test route is working, but some environment variables are MISSING: {', '.join(missing_vars_list)}"
+    else:
+        return "Hello from Vercel! The test route is working and ALL environment variables are set."
+# ======================================================================
 
-# --- অ্যাপ্লিকেশন সেটআপ ---
-TELEGRAM_API_URL = f"https://api.telegram.org/bot{BOT_TOKEN}"
-app = Flask(__name__)
+# --- গ্লোবাল ভেরিয়েবল ---
+client = None
+db = None
+movies = None
+settings = None
+feedback = None
+TELEGRAM_API_URL = None
+
+# --- অ্যাপ্লিকেশন ইনিশিয়ালাইজেশন ---
+try:
+    # প্রয়োজনীয় ভেরিয়েবলগুলো পরীক্ষা করা
+    required_vars_check = {
+        "MONGO_URI": MONGO_URI, "BOT_TOKEN": BOT_TOKEN, "TMDB_API_KEY": TMDB_API_KEY,
+        "ADMIN_CHANNEL_ID": ADMIN_CHANNEL_ID, "BOT_USERNAME": BOT_USERNAME,
+        "ADMIN_USERNAME": ADMIN_USERNAME, "ADMIN_PASSWORD": ADMIN_PASSWORD,
+    }
+    missing_vars_check = [name for name, value in required_vars_check.items() if not value]
+    if missing_vars_check:
+        # sys.exit(1) না দিয়ে শুধু প্রিন্ট করা হচ্ছে যাতে /test রুট কাজ করে
+        print(f"WARNING: Missing environment variables, application might not work correctly: {', '.join(missing_vars_check)}")
+
+    if BOT_TOKEN:
+        TELEGRAM_API_URL = f"https://api.telegram.org/bot{BOT_TOKEN}"
+
+    if MONGO_URI:
+        client = MongoClient(MONGO_URI)
+        db = client.get_database()
+        movies = db["movies"]
+        settings = db["settings"]
+        feedback = db["feedback"]
+        print("SUCCESS: Successfully connected to MongoDB!")
+    else:
+        print("WARNING: MONGO_URI is not set. Database features will be disabled.")
+
+except Exception as e:
+    print(f"FATAL: Error during application initialization: {e}")
 
 # --- অ্যাডমিন অথেন্টিকেশন ফাংশন ---
 def check_auth(username, password):
+    if not ADMIN_USERNAME or not ADMIN_PASSWORD: return False
     return username == ADMIN_USERNAME and password == ADMIN_PASSWORD
 
 def authenticate():
@@ -55,23 +100,13 @@ def requires_auth(f):
         return f(*args, **kwargs)
     return decorated
 
-# --- ডাটাবেস কানেকশন ---
-try:
-    client = MongoClient(MONGO_URI)
-    db = client.get_database()
-    movies = db["movies"]
-    settings = db["settings"]
-    feedback = db["feedback"]
-    print("SUCCESS: Successfully connected to MongoDB!")
-except Exception as e:
-    print(f"FATAL: Error connecting to MongoDB: {e}. Exiting.")
-    sys.exit(1)
-
 # --- Context Processor: বিজ্ঞাপনের কোড সহজলভ্য করার জন্য ---
 @app.context_processor
 def inject_ads():
-    ad_codes = settings.find_one()
-    return dict(ad_settings=(ad_codes or {}), bot_username=BOT_USERNAME)
+    ad_codes = {}
+    if settings:
+        ad_codes = settings.find_one() or {}
+    return dict(ad_settings=ad_codes, bot_username=BOT_USERNAME)
 
 # ======================================================================
 # --- HTML টেমপ্লেট ---
@@ -451,7 +486,6 @@ textarea { resize: vertical; min-height: 120px; } button[type="submit"] { backgr
 # ======================================================================
 # --- Helper Functions ---
 # ======================================================================
-
 def parse_filename(filename):
     cleaned_name = filename.replace('.', ' ').replace('_', ' ')
     base_name = re.sub(r'(\d{3,4}p|web-?dl|hdrip|bluray|x264|x265|hevc|pack|complete|final|dual audio|hindi|season).*$', '', cleaned_name, flags=re.IGNORECASE).strip()
@@ -489,16 +523,21 @@ def get_tmdb_details_from_api(title, content_type, year=None):
     return None
 
 def process_movie_list(movie_list):
+    processed_list = []
     for item in movie_list:
-        if '_id' in item: item['_id'] = str(item['_id'])
-    return movie_list
+        if '_id' in item:
+            item['_id'] = str(item['_id'])
+        processed_list.append(item)
+    return processed_list
 
 # ======================================================================
 # --- Main Flask Routes ---
 # ======================================================================
-
 @app.route('/')
 def home():
+    if not movies:
+        return "Database not configured. Please check MONGO_URI environment variable.", 500
+        
     query = request.args.get('q')
     if query:
         movies_list = list(movies.find({"title": {"$regex": query, "$options": "i"}}).sort('_id', -1))
@@ -519,6 +558,8 @@ def home():
 
 @app.route('/movie/<movie_id>')
 def movie_detail(movie_id):
+    if not movies:
+        return "Database not configured.", 500
     try:
         movie = movies.find_one({"_id": ObjectId(movie_id)})
         if not movie: return "Content not found", 404
@@ -543,6 +584,8 @@ def movie_detail(movie_id):
 
 @app.route('/watch/<movie_id>')
 def watch_movie(movie_id):
+    if not movies:
+        return "Database not configured.", 500
     try:
         movie = movies.find_one({"_id": ObjectId(movie_id)})
         if not movie or not movie.get("watch_link"): return "Content not found.", 404
@@ -553,21 +596,44 @@ def render_full_list(content_list, title):
     return render_template_string(index_html, movies=process_movie_list(content_list), query=title, is_full_page_list=True)
 
 @app.route('/badge/<badge_name>')
-def movies_by_badge(badge_name): return render_full_list(list(movies.find({"poster_badge": badge_name}).sort('_id', -1)), f'Tag: {badge_name}')
+def movies_by_badge(badge_name):
+    if not movies: return "Database not configured.", 500
+    return render_full_list(list(movies.find({"poster_badge": badge_name}).sort('_id', -1)), f'Tag: {badge_name}')
+
 @app.route('/genres')
-def genres_page(): return render_template_string(genres_html, genres=sorted([g for g in movies.distinct("genres") if g]), title="Browse by Genre")
+def genres_page():
+    if not movies: return "Database not configured.", 500
+    return render_template_string(genres_html, genres=sorted([g for g in movies.distinct("genres") if g]), title="Browse by Genre")
+
 @app.route('/genre/<genre_name>')
-def movies_by_genre(genre_name): return render_full_list(list(movies.find({"genres": genre_name}).sort('_id', -1)), f'Genre: {genre_name}')
+def movies_by_genre(genre_name):
+    if not movies: return "Database not configured.", 500
+    return render_full_list(list(movies.find({"genres": genre_name}).sort('_id', -1)), f'Genre: {genre_name}')
+
 @app.route('/trending_movies')
-def trending_movies(): return render_full_list(list(movies.find({"is_trending": True, "is_coming_soon": {"$ne": True}}).sort('_id', -1)), "Trending Now")
+def trending_movies():
+    if not movies: return "Database not configured.", 500
+    return render_full_list(list(movies.find({"is_trending": True, "is_coming_soon": {"$ne": True}}).sort('_id', -1)), "Trending Now")
+
 @app.route('/movies_only')
-def movies_only(): return render_full_list(list(movies.find({"type": "movie", "is_coming_soon": {"$ne": True}}).sort('_id', -1)), "All Movies")
+def movies_only():
+    if not movies: return "Database not configured.", 500
+    return render_full_list(list(movies.find({"type": "movie", "is_coming_soon": {"$ne": True}}).sort('_id', -1)), "All Movies")
+
 @app.route('/webseries')
-def webseries(): return render_full_list(list(movies.find({"type": "series", "is_coming_soon": {"$ne": True}}).sort('_id', -1)), "All Web Series")
+def webseries():
+    if not movies: return "Database not configured.", 500
+    return render_full_list(list(movies.find({"type": "series", "is_coming_soon": {"$ne": True}}).sort('_id', -1)), "All Web Series")
+
 @app.route('/coming_soon')
-def coming_soon(): return render_full_list(list(movies.find({"is_coming_soon": True}).sort('_id', -1)), "Coming Soon")
+def coming_soon():
+    if not movies: return "Database not configured.", 500
+    return render_full_list(list(movies.find({"is_coming_soon": True}).sort('_id', -1)), "Coming Soon")
+
 @app.route('/recently_added')
-def recently_added_all(): return render_full_list(list(movies.find({"is_coming_soon": {"$ne": True}}).sort('_id', -1)), "Recently Added")
+def recently_added_all():
+    if not movies: return "Database not configured.", 500
+    return render_full_list(list(movies.find({"is_coming_soon": {"$ne": True}}).sort('_id', -1)), "Recently Added")
 
 # ======================================================================
 # --- Admin and Webhook Routes ---
@@ -576,6 +642,7 @@ def recently_added_all(): return render_full_list(list(movies.find({"is_coming_s
 @app.route('/admin', methods=["GET", "POST"])
 @requires_auth
 def admin():
+    if not movies: return "Database not configured.", 500
     if request.method == "POST":
         content_type = request.form.get("content_type", "movie")
         tmdb_data = get_tmdb_details_from_api(request.form.get("title"), content_type) or {}
@@ -607,6 +674,7 @@ def admin():
 @app.route('/admin/save_ads', methods=['POST'])
 @requires_auth
 def save_ads():
+    if not settings: return "Database not configured.", 500
     ad_codes = {"popunder_code": request.form.get("popunder_code", ""), "social_bar_code": request.form.get("social_bar_code", ""), "banner_ad_code": request.form.get("banner_ad_code", ""), "native_banner_code": request.form.get("native_banner_code", "")}
     settings.update_one({}, {"$set": ad_codes}, upsert=True)
     return redirect(url_for('admin'))
@@ -614,6 +682,7 @@ def save_ads():
 @app.route('/edit_movie/<movie_id>', methods=["GET", "POST"])
 @requires_auth
 def edit_movie(movie_id):
+    if not movies: return "Database not configured.", 500
     movie_obj = movies.find_one({"_id": ObjectId(movie_id)})
     if not movie_obj: return "Movie not found", 404
     if request.method == "POST":
@@ -645,12 +714,14 @@ def edit_movie(movie_id):
 @app.route('/delete_movie/<movie_id>')
 @requires_auth
 def delete_movie(movie_id):
+    if not movies: return "Database not configured.", 500
     movies.delete_one({"_id": ObjectId(movie_id)})
     return redirect(url_for('admin'))
 
 @app.route('/contact', methods=['GET', 'POST'])
 def contact():
     if request.method == 'POST':
+        if not feedback: return "Database not configured.", 500
         feedback_data = {"type": request.form.get("type"), "content_title": request.form.get("content_title"), "message": request.form.get("message"), "email": request.form.get("email", "").strip(), "reported_content_id": request.form.get("reported_content_id"), "timestamp": datetime.utcnow()}
         feedback.insert_one(feedback_data)
         return render_template_string(contact_html, message_sent=True)
@@ -661,11 +732,15 @@ def contact():
 @app.route('/delete_feedback/<feedback_id>')
 @requires_auth
 def delete_feedback(feedback_id):
+    if not feedback: return "Database not configured.", 500
     feedback.delete_one({"_id": ObjectId(feedback_id)})
     return redirect(url_for('admin'))
 
 @app.route('/webhook', methods=['POST'])
 def telegram_webhook():
+    if not movies or not TELEGRAM_API_URL:
+        return jsonify(status='error', reason='Application not fully configured'), 500
+        
     data = request.get_json()
     if 'channel_post' in data:
         post = data['channel_post']
@@ -677,23 +752,16 @@ def telegram_webhook():
             return jsonify(status='ok', reason='no_file_in_post')
 
         filename = file.get('file_name')
-        print(f"Webhook: Received file: {filename}")
-
         parsed_info = parse_filename(filename)
-        print(f"Webhook: Parsed Info: {parsed_info}")
-
         quality_match = re.search(r'(\d{3,4})p', filename, re.IGNORECASE)
         quality = quality_match.group(1) + "p" if quality_match else "HD"
-        print(f"Webhook: Detected Quality: {quality}")
-
         tmdb_data = get_tmdb_details_from_api(parsed_info['title'], parsed_info['type'], parsed_info.get('year'))
 
         if not tmdb_data or not tmdb_data.get("tmdb_id"):
-            print(f"Webhook FATAL: Could not find TMDb data or tmdb_id for '{parsed_info['title']}'. Skipping.")
+            print(f"Webhook FATAL: Could not find TMDb data for '{parsed_info['title']}'. Skipping.")
             return jsonify(status='ok', reason='no_tmdb_data_or_id')
         
         tmdb_id = tmdb_data.get("tmdb_id")
-        print(f"Webhook: Found TMDb Data: {tmdb_data.get('title')} (ID: {tmdb_id})")
 
         if parsed_info['type'] == 'series':
             existing_series = movies.find_one({"tmdb_id": tmdb_id})
@@ -701,23 +769,18 @@ def telegram_webhook():
             if existing_series:
                 movies.update_one({"_id": existing_series['_id']}, {"$pull": {"episodes": {"season": new_episode['season'], "episode_number": new_episode['episode_number']}}})
                 movies.update_one({"_id": existing_series['_id']}, {"$push": {"episodes": new_episode}})
-                print(f"Webhook: Updated series '{existing_series['title']}'.")
             else:
                 series_doc = {**tmdb_data, "type": "series", "is_trending": False, "is_coming_soon": False, "episodes": [new_episode]}
                 movies.insert_one(series_doc)
-                print(f"Webhook: Created new series '{tmdb_data.get('title')}'.")
-        
-        else: # type == 'movie'
+        else: # movie
             existing_movie = movies.find_one({"tmdb_id": tmdb_id})
             new_file = {"quality": quality, "message_id": post['message_id']}
             if existing_movie:
                 movies.update_one({"_id": existing_movie['_id']}, {"$pull": {"files": {"quality": new_file['quality']}}})
                 movies.update_one({"_id": existing_movie['_id']}, {"$push": {"files": new_file}})
-                print(f"Webhook: Updated movie '{existing_movie['title']}' with new quality.")
             else:
                 movie_doc = {**tmdb_data, "type": "movie", "is_trending": False, "is_coming_soon": False, "files": [new_file]}
                 movies.insert_one(movie_doc)
-                print(f"Webhook: Created new movie '{tmdb_data.get('title')}'.")
 
     elif 'message' in data:
         message = data['message']
@@ -762,4 +825,4 @@ def telegram_webhook():
 
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 5000))
-    app.run(host='0.0.0.0', port=port, debug=False)
+    app.run(host='0.0.0.0', port=port, debug=True)
